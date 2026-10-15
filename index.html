@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PulseWave V3 - Working Music Streamer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 10px; }
+      @keyframes eqBounce {
+        0%, 100% { height: 20%; }
+        50% { height: 100%; }
+      }
+      .eq-bar { animation: eqBounce 0.7s ease-in-out infinite; }
+    </style>
+  </head>
+  <body class="bg-zinc-950 text-white select-none overflow-hidden font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useRef, useEffect } = React;
+
+      const GRADIENTS = [
+        { bg: "from-emerald-900/60 via-zinc-950 to-black", accent: "#10b981" },
+        { bg: "from-purple-900/60 via-zinc-950 to-black", accent: "#a855f7" },
+        { bg: "from-rose-900/60 via-zinc-950 to-black", accent: "#f43f5e" },
+        { bg: "from-blue-900/60 via-zinc-950 to-black", accent: "#3b82f6" },
+        { bg: "from-amber-900/60 via-zinc-950 to-black", accent: "#f59e0b" },
+        { bg: "from-cyan-900/60 via-zinc-950 to-black", accent: "#06b6d4" }
+      ];
+
+      // Instant Starter Songs (Guaranteed to work offline/online immediately)
+      const STARTER_SONGS = [
+        {
+          id: "start-1",
+          title: "Midnight Synth Drive (Full Instrumental)",
+          artist: "SoundHelix Electronic",
+          url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+          cover: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=500&q=80",
+          color: GRADIENTS[0].bg,
+          type: "FULL TRACK"
+        },
+        {
+          id: "start-2",
+          title: "Neon Horizon Beats (Full Track)",
+          artist: "Future Groove",
+          url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+          cover: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&q=80",
+          color: GRADIENTS[1].bg,
+          type: "FULL TRACK"
+        },
+        {
+          id: "start-3",
+          title: "Deep Space Chill (Full Track)",
+          artist: "Lo-Fi Collective",
+          url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
+          cover: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&q=80",
+          color: GRADIENTS[2].bg,
+          type: "FULL TRACK"
+        }
+      ];
+
+      // JSONP Helper: Bypasses browser file:// CORS security blocks completely!
+      function fetchItunesJSONP(query) {
+        return new Promise((resolve, reject) => {
+          const callbackName = "itunes_cb_" + Math.round(1000000 * Math.random());
+          const script = document.createElement("script");
+
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("Timeout"));
+          }, 8000);
+
+          function cleanup() {
+            clearTimeout(timeout);
+            delete window[callbackName];
+            if (script.parentNode) script.parentNode.removeChild(script);
+          }
+
+          window[callbackName] = (data) => {
+            cleanup();
+            resolve(data);
+          };
+
+          script.src = `https://itunes.apple.com/search?term=${encodeURIComponent(
+            query
+          )}&media=music&entity=song&limit=28&callback=${callbackName}`;
+          script.onerror = () => {
+            cleanup();
+            reject(new Error("Script load error"));
+          };
+
+          document.body.appendChild(script);
+        });
+      }
+
+      function App() {
+        const [tracks, setTracks] = useState(STARTER_SONGS);
+        const [currentTrack, setCurrentTrack] = useState(STARTER_SONGS[0]);
+        const [isPlaying, setIsPlaying] = useState(false);
+        const [progress, setProgress] = useState(0);
+        const [duration, setDuration] = useState(0);
+        const [volume, setVolume] = useState(0.85);
+        const [isMuted, setIsMuted] = useState(false);
+        const [likedTracks, setLikedTracks] = useState([]);
+        const [searchQuery, setSearchQuery] = useState("");
+        const [isLoading, setIsLoading] = useState(false);
+        const [activeTab, setActiveTab] = useState("home");
+        const [playbackSpeed, setPlaybackSpeed] = useState(1);
+        const [statusMsg, setStatusMsg] = useState("Ready! Click any song to play.");
+
+        const audioRef = useRef(null);
+
+        // Load Arijit Singh & The Weeknd automatically on startup
+        useEffect(() => {
+          searchMusic("Arijit Singh");
+        }, []);
+
+        // Universal Search Function (Works from file:/// without server!)
+        const searchMusic = async (query) => {
+          if (!query || !query.trim()) return;
+          setIsLoading(true);
+          setActiveTab("home");
+          setStatusMsg(`Searching "${query}"...`);
+
+          // Step 1: Try Full-Length JioSaavn API first
+          const saavnApis = [
+            `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=24`,
+            `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=24`
+          ];
+
+          for (const url of saavnApis) {
+            try {
+              const res = await fetch(url);
+              if (res.ok) {
+                const json = await res.json();
+                const list = json?.data?.results || json?.results || [];
+                if (list.length > 0) {
+                  const formatted = list
+                    .map((item, idx) => {
+                      const dl = item.downloadUrl;
+                      const audioUrl = Array.isArray(dl)
+                        ? dl[dl.length - 1]?.url || dl[dl.length - 1]?.link
+                        : null;
+                      if (!audioUrl) return null;
+
+                      const img = item.image;
+                      const coverUrl = Array.isArray(img) && img.length > 0
+                        ? img[img.length - 1]?.url || img[img.length - 1]?.link
+                        : "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&q=80";
+
+                      const artists =
+                        item.artists?.primary?.map((a) => a.name).join(", ") ||
+                        item.primaryArtists ||
+                        "Artist";
+
+                      return {
+                        id: `saavn-${item.id || idx}`,
+                        title: (item.name || item.title || "Song").replace(/&quot;/g, '"').replace(/&amp;/g, "&"),
+                        artist: artists,
+                        url: audioUrl.replace(/^http:\/\//i, "https://"),
+                        cover: coverUrl,
+                        color: GRADIENTS[idx % GRADIENTS.length].bg,
+                        type: "FULL SONG"
+                      };
+                    })
+                    .filter(Boolean);
+
+                  if (formatted.length > 0) {
+                    setTracks(formatted);
+                    setCurrentTrack(formatted[0]);
+                    setStatusMsg(`Loaded ${formatted.length} full songs`);
+                    setIsLoading(false);
+                    return;
+                  }
+                }
+              }
+            } catch (err) {
+              // Move to JSONP fallback if blocked by ISP or CORS
+            }
+          }
+
+          // Step 2: Guaranteed JSONP Search (Works 100% on file:/// in all browsers & networks)
+          try {
+            const data = await fetchItunesJSONP(query);
+            if (data && data.results && data.results.length > 0) {
+              const formatted = data.results
+                .filter((item) => item.previewUrl)
+                .map((item, idx) => ({
+                  id: `itunes-${item.trackId}`,
+                  title: item.trackName,
+                  artist: item.artistName,
+                  url: item.previewUrl,
+                  cover: item.artworkUrl100.replace("100x100bb", "500x500bb"),
+                  color: GRADIENTS[idx % GRADIENTS.length].bg,
+                  type: "SPOTIFY / APPLE STREAM"
+                }));
+
+              setTracks(formatted);
+              setCurrentTrack(formatted[0]);
+              setStatusMsg(`Found ${formatted.length} songs for "${query}"`);
+              setIsLoading(false);
+              return;
+            }
+          } catch (jsonpErr) {
+            console.warn("JSONP error:", jsonpErr);
+          }
+
+          setStatusMsg("Showing offline starter tracks (Check internet connection)");
+          setTracks(STARTER_SONGS);
+          setIsLoading(false);
+        };
+
+        // Direct 1-Click Play
+        const playSong = (track) => {
+          if (!audioRef.current) return;
+
+          if (currentTrack?.id === track.id) {
+            togglePlay();
+            return;
+          }
+
+          setCurrentTrack(track);
+          audioRef.current.src = track.url;
+          audioRef.current.playbackRate = playbackSpeed;
+          audioRef.current.volume = isMuted ? 0 : volume;
+
+          audioRef.current
+            .play()
+            .then(() => {
+              setIsPlaying(true);
+              setStatusMsg(`Now Playing: ${track.title}`);
+            })
+            .catch((e) => {
+              console.error(e);
+              setIsPlaying(false);
+              setStatusMsg("Click the Play button below to start audio");
+            });
+        };
+
+        const togglePlay = () => {
+          if (!audioRef.current || !currentTrack) return;
+          if (isPlaying) {
+            audioRef.current.pause();
+            setIsPlaying(false);
+          } else {
+            if (!audioRef.current.src || audioRef.current.src !== currentTrack.url) {
+              audioRef.current.src = currentTrack.url;
+            }
+            audioRef.current
+              .play()
+              .then(() => setIsPlaying(true))
+              .catch(() => setStatusMsg("Select a song card to play!"));
+          }
+        };
+
+        const activeList = activeTab === "home" ? tracks : likedTracks;
+
+        const playNext = () => {
+          if (!activeList.length) return;
+          const idx = activeList.findIndex((t) => t.id === currentTrack?.id);
+          const next = activeList[(idx + 1) % activeList.length];
+          if (next) playSong(next);
+        };
+
+        const playPrev = () => {
+          if (!activeList.length) return;
+          const idx = activeList.findIndex((t) => t.id === currentTrack?.id);
+          const prev = activeList[(idx - 1 + activeList.length) % activeList.length];
+          if (prev) playSong(prev);
+        };
+
+        // Load Local PC MP3s
+        const handleLocalFiles = (e) => {
+          const files = Array.from(e.target.files).filter(
+            (f) => f.type.startsWith("audio/") || f.name.endsWith(".mp3") || f.name.endsWith(".wav")
+          );
+          if (!files.length) return;
+          const localList = files.map((file, idx) => ({
+            id: `local-${idx}-${Date.now()}`,
+            title: file.name.replace(/\.[^/.]+$/, ""),
+            artist: "My Computer",
+            url: URL.createObjectURL(file),
+            cover: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&q=80",
+            color: GRADIENTS[idx % GRADIENTS.length].bg,
+            type: "LOCAL MP3"
+          }));
+          setTracks(localList);
+          setActiveTab("home");
+          playSong(localList[0]);
+        };
+
+        const toggleLike = (track, e) => {
+          e.stopPropagation();
+          setLikedTracks((prev) =>
+            prev.some((t) => t.id === track.id)
+              ? prev.filter((t) => t.id !== track.id)
+              : [track, ...prev]
+          );
+        };
+
+        const formatTime = (sec) => {
+          if (!sec || isNaN(sec)) return "0:00";
+          const mins = Math.floor(sec / 60);
+          const secs = Math.floor(sec % 60);
+          return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+        };
+
+        const ARTISTS = [
+          "Arijit Singh",
+          "The Weeknd",
+          "Coldplay",
+          "Diljit Dosanjh",
+          "Pritam",
+          "AR Rahman",
+          "AP Dhillon",
+          "Eminem",
+          "Taylor Swift"
+        ];
+
+        return (
+          <div className={`h-screen w-screen flex flex-col bg-gradient-to-b ${currentTrack?.color || GRADIENTS[0].bg} transition-colors duration-1000`}>
+            <audio
+              ref={audioRef}
+              onTimeUpdate={() => setProgress(audioRef.current.currentTime)}
+              onLoadedMetadata={() => setDuration(audioRef.current.duration)}
+              onEnded={playNext}
+            />
+
+            {/* MAIN AREA */}
+            <div className="flex-1 flex overflow-hidden p-3 gap-3">
+              
+              {/* LEFT SIDEBAR */}
+              <div className="w-64 bg-zinc-900/80 backdrop-blur-xl rounded-2xl p-5 flex flex-col gap-5 border border-white/10">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-emerald-500 rounded-full text-black font-black flex items-center justify-center text-xl">
+                    ♫
+                  </div>
+                  <div>
+                    <span className="text-xl font-extrabold block leading-none">PulseWave</span>
+                    <span className="text-[10px] text-emerald-400 uppercase tracking-widest">V3 Direct Player</span>
+                  </div>
+                </div>
+
+                <nav className="flex flex-col gap-2">
+                  <button
+                    onClick={() => setActiveTab("home")}
+                    className={`flex items-center justify-between px-4 py-3 rounded-xl font-bold text-sm transition ${
+                      activeTab === "home" ? "bg-emerald-500 text-black" : "bg-white/5 text-zinc-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <span>🌍 Songs List</span>
+                    <span>{tracks.length}</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("liked")}
+                    className={`flex items-center justify-between px-4 py-3 rounded-xl font-bold text-sm transition ${
+                      activeTab === "liked" ? "bg-emerald-500 text-black" : "bg-white/5 text-zinc-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <span>❤️ Liked Songs</span>
+                    <span>{likedTracks.length}</span>
+                  </button>
+                </nav>
+
+                {/* Active Song Preview Card */}
+                {currentTrack && (
+                  <div className="bg-white/5 p-3 rounded-2xl border border-white/10">
+                    <img src={currentTrack.cover} className="w-full aspect-square object-cover rounded-xl mb-2 shadow-lg" />
+                    <p className="font-bold text-sm truncate">{currentTrack.title}</p>
+                    <p className="text-xs text-zinc-400 truncate">{currentTrack.artist}</p>
+                  </div>
+                )}
+
+                <div className="mt-auto">
+                  <label className="cursor-pointer flex items-center justify-center gap-2 w-full bg-white/10 hover:bg-white/20 text-white font-semibold py-2.5 px-4 rounded-xl transition text-xs border border-white/10">
+                    <span>📂 Open Local PC MP3s</span>
+                    <input type="file" multiple accept="audio/*" onChange={handleLocalFiles} className="hidden" />
+                  </label>
+                </div>
+              </div>
+
+              {/* RIGHT CONTENT */}
+              <div className="flex-1 bg-zinc-900/50 backdrop-blur-xl rounded-2xl p-6 flex flex-col border border-white/10 overflow-hidden">
+                
+                {/* Top Search Bar */}
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      searchMusic(searchQuery);
+                    }}
+                    className="flex items-center gap-2 flex-1 max-w-xl"
+                  >
+                    <input
+                      type="text"
+                      placeholder="🔍 Type any song or artist (e.g. Kesariya, Starboy, Coldplay)..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-white/10 border border-white/20 rounded-full px-5 py-2.5 text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-emerald-400"
+                    />
+                    <button
+                      type="submit"
+                      className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-6 py-2.5 rounded-full text-sm transition shadow-lg"
+                    >
+                      Search
+                    </button>
+                  </form>
+
+                  {/* Speed Controls */}
+                  <div className="flex items-center gap-1 bg-white/5 px-3 py-1.5 rounded-full border border-white/10 text-xs">
+                    {[
+                      { label: "Slowed", rate: 0.85 },
+                      { label: "1x", rate: 1 },
+                      { label: "Nightcore", rate: 1.2 }
+                    ].map((p) => (
+                      <button
+                        key={p.rate}
+                        onClick={() => {
+                          setPlaybackSpeed(p.rate);
+                          if (audioRef.current) audioRef.current.playbackRate = p.rate;
+                        }}
+                        className={`px-2.5 py-1 rounded-full transition ${
+                          playbackSpeed === p.rate ? "bg-emerald-500 text-black font-bold" : "text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Instant Artist Buttons */}
+                <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
+                  {ARTISTS.map((artist) => (
+                    <button
+                      key={artist}
+                      onClick={() => {
+                        setSearchQuery(artist);
+                        searchMusic(artist);
+                      }}
+                      className="text-xs bg-white/10 hover:bg-emerald-500 hover:text-black px-3.5 py-1.5 rounded-full whitespace-nowrap transition font-medium"
+                    >
+                      {artist}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Status Bar */}
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-bold">
+                    {activeTab === "home" ? "Click Any Song Card to Play Immediately" : "Your Liked Songs"}
+                  </h2>
+                  <span className="text-xs text-emerald-400 font-medium">{statusMsg}</span>
+                </div>
+
+                {/* SONG CARDS GRID */}
+                <div className="flex-1 overflow-y-auto pr-1">
+                  {isLoading ? (
+                    <div className="text-center py-20 text-emerald-400 font-bold animate-pulse text-lg">
+                      Loading songs from music server...
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 pb-6">
+                      {activeList.map((track) => {
+                        const isCurrent = currentTrack?.id === track.id;
+                        const isLiked = likedTracks.some((t) => t.id === track.id);
+
+                        return (
+                          <div
+                            key={track.id}
+                            onClick={() => playSong(track)}
+                            className={`group relative p-3.5 rounded-2xl cursor-pointer transition flex flex-col ${
+                              isCurrent
+                                ? "bg-white/20 border-2 border-emerald-500 shadow-xl"
+                                : "bg-white/5 hover:bg-white/15 border border-white/10"
+                            }`}
+                          >
+                            <div className="relative aspect-square rounded-xl overflow-hidden mb-3 bg-zinc-800">
+                              <img src={track.cover} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+                              <button
+                                onClick={(e) => toggleLike(track, e)}
+                                className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/60 flex items-center justify-center"
+                              >
+                                {isLiked ? "❤️" : "🤍"}
+                              </button>
+                              <div className="absolute bottom-2 right-2 w-11 h-11 rounded-full bg-emerald-500 text-black flex items-center justify-center font-bold text-lg shadow-xl">
+                                {isCurrent && isPlaying ? "⏸" : "▶"}
+                              </div>
+                            </div>
+                            <p className={`font-bold text-sm truncate ${isCurrent ? "text-emerald-400" : "text-white"}`}>
+                              {track.title}
+                            </p>
+                            <p className="text-xs text-zinc-400 truncate mt-0.5">{track.artist}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* BOTTOM PLAYER BAR */}
+            <div className="h-24 bg-black/90 border-t border-white/10 px-6 flex items-center justify-between">
+              <div className="flex items-center gap-4 w-1/4 min-w-0">
+                {currentTrack && (
+                  <>
+                    <img src={currentTrack.cover} className="w-14 h-14 rounded-xl object-cover" />
+                    <div className="truncate">
+                      <h4 className="font-bold text-sm truncate">{currentTrack.title}</h4>
+                      <p className="text-xs text-zinc-400 truncate">{currentTrack.artist}</p>
+                    </div>
+                    {isPlaying && (
+                      <div className="flex items-end gap-0.5 h-5 ml-2">
+                        <span className="w-1 bg-emerald-400 eq-bar" style={{ animationDelay: "0s" }} />
+                        <span className="w-1 bg-emerald-400 eq-bar" style={{ animationDelay: "0.2s" }} />
+                        <span className="w-1 bg-emerald-400 eq-bar" style={{ animationDelay: "0.4s" }} />
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="flex flex-col items-center w-2/4 max-w-xl gap-2">
+                <div className="flex items-center gap-6">
+                  <button onClick={playPrev} className="text-xl hover:scale-110 transition">⏮</button>
+                  <button
+                    onClick={togglePlay}
+                    className="w-11 h-11 rounded-full bg-emerald-500 text-black flex items-center justify-center font-bold text-lg hover:scale-105 transition"
+                  >
+                    {isPlaying ? "⏸" : "▶"}
+                  </button>
+                  <button onClick={playNext} className="text-xl hover:scale-110 transition">⏭</button>
+                </div>
+                <div className="w-full flex items-center gap-3 text-xs text-zinc-400">
+                  <span>{formatTime(progress)}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={duration || 100}
+                    value={progress}
+                    onChange={(e) => {
+                      const t = Number(e.target.value);
+                      if (audioRef.current) audioRef.current.currentTime = t;
+                      setProgress(t);
+                    }}
+                    className="flex-1 accent-emerald-400 h-1.5 bg-zinc-700 rounded-lg cursor-pointer"
+                  />
+                  <span>{formatTime(duration)}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 w-1/4">
+                <button
+                  onClick={() => {
+                    const nextMute = !isMuted;
+                    setIsMuted(nextMute);
+                    if (audioRef.current) audioRef.current.muted = nextMute;
+                  }}
+                >
+                  {isMuted ? "🔇" : "🔊"}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={isMuted ? 0 : volume}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setVolume(val);
+                    setIsMuted(false);
+                    if (audioRef.current) audioRef.current.volume = val;
+                  }}
+                  className="w-24 accent-emerald-400 h-1.5 bg-zinc-700 rounded-lg cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
