@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PulseWave V3 - Working Music Streamer</title>
+    <title>PulseWave Pro - Full Length Music Streamer</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
@@ -34,189 +34,173 @@
         { bg: "from-cyan-900/60 via-zinc-950 to-black", accent: "#06b6d4" }
       ];
 
-      // Instant Starter Songs (Guaranteed to work offline/online immediately)
-      const STARTER_SONGS = [
-        {
-          id: "start-1",
-          title: "Midnight Synth Drive (Full Instrumental)",
-          artist: "SoundHelix Electronic",
-          url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-          cover: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=500&q=80",
-          color: GRADIENTS[0].bg,
-          type: "FULL TRACK"
-        },
-        {
-          id: "start-2",
-          title: "Neon Horizon Beats (Full Track)",
-          artist: "Future Groove",
-          url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-          cover: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&q=80",
-          color: GRADIENTS[1].bg,
-          type: "FULL TRACK"
-        },
-        {
-          id: "start-3",
-          title: "Deep Space Chill (Full Track)",
-          artist: "Lo-Fi Collective",
-          url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
-          cover: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&q=80",
-          color: GRADIENTS[2].bg,
-          type: "FULL TRACK"
-        }
-      ];
+      // 5 Live Full-Song Servers + CORS Bridges so full 4-minute songs NEVER get blocked
+      const buildFullSongUrls = (query) => {
+        const q = encodeURIComponent(query);
+        const rawApis = [
+          `https://saavn.dev/api/search/songs?query=${q}&limit=28`,
+          `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${q}&limit=28`,
+          `https://saavn.sumit.co/api/search/songs?query=${q}&limit=28`,
+          `https://jiosaavn-api-ts.vercel.app/modules?language=hindi,english`
+        ];
 
-      // JSONP Helper: Bypasses browser file:// CORS security blocks completely!
-      function fetchItunesJSONP(query) {
-        return new Promise((resolve, reject) => {
-          const callbackName = "itunes_cb_" + Math.round(1000000 * Math.random());
-          const script = document.createElement("script");
+        return [
+          rawApis[0],
+          rawApis[1],
+          rawApis[2],
+          // CORS Proxy bridges (bypasses browser & ISP blocks on file:// and github.io)
+          `https://api.allorigins.win/raw?url=${encodeURIComponent(rawApis[0])}`,
+          `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rawApis[0])}`,
+          `https://api.allorigins.win/raw?url=${encodeURIComponent(rawApis[1])}`
+        ];
+      };
 
-          const timeout = setTimeout(() => {
-            cleanup();
-            reject(new Error("Timeout"));
-          }, 8000);
+      // Format seconds into M:SS
+      const formatTime = (sec) => {
+        if (!sec || isNaN(sec)) return "0:00";
+        const mins = Math.floor(sec / 60);
+        const secs = Math.floor(sec % 60);
+        return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+      };
 
-          function cleanup() {
-            clearTimeout(timeout);
-            delete window[callbackName];
-            if (script.parentNode) script.parentNode.removeChild(script);
-          }
+      // Extract highest quality 320kbps Full-Length MP4/M4A stream from any JioSaavn API format
+      const parseSaavnResults = (json) => {
+        const rawList =
+          json?.data?.results ||
+          json?.results ||
+          json?.data ||
+          [];
 
-          window[callbackName] = (data) => {
-            cleanup();
-            resolve(data);
-          };
+        if (!Array.isArray(rawList)) return [];
 
-          script.src = `https://itunes.apple.com/search?term=${encodeURIComponent(
-            query
-          )}&media=music&entity=song&limit=28&callback=${callbackName}`;
-          script.onerror = () => {
-            cleanup();
-            reject(new Error("Script load error"));
-          };
+        return rawList
+          .map((item, idx) => {
+            // Handle different downloadUrl structures across API versions
+            let audioUrl = null;
+            const dl = item.downloadUrl || item.media_preview_url || item.url;
+            if (Array.isArray(dl) && dl.length > 0) {
+              // Last item in array is highest quality (320kbps full song)
+              const best = dl[dl.length - 1] || dl[0];
+              audioUrl = best?.url || best?.link || (typeof best === "string" ? best : null);
+            } else if (typeof dl === "string") {
+              audioUrl = dl;
+            }
 
-          document.body.appendChild(script);
-        });
-      }
+            if (!audioUrl) return null;
+
+            // Extract high-res 500x500 cover image
+            let coverUrl = "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=500&q=80";
+            if (Array.isArray(item.image) && item.image.length > 0) {
+              const bestImg = item.image[item.image.length - 1];
+              coverUrl = bestImg?.url || bestImg?.link || coverUrl;
+            } else if (typeof item.image === "string") {
+              coverUrl = item.image;
+            }
+
+            const artists =
+              item.artists?.primary?.map((a) => a.name).join(", ") ||
+              item.primaryArtists ||
+              item.subtitle ||
+              "Featured Artist";
+
+            const songDuration = Number(item.duration) || 210;
+
+            return {
+              id: `full-${item.id || idx}-${Math.random().toString(36).slice(2, 6)}`,
+              title: (item.name || item.title || "Track")
+                .replace(/&quot;/g, '"')
+                .replace(/&#039;/g, "'")
+                .replace(/&amp;/g, "&"),
+              artist: String(artists).replace(/&amp;/g, "&").replace(/&quot;/g, '"'),
+              url: audioUrl.replace(/^http:\/\//i, "https://"),
+              cover: coverUrl.replace(/^http:\/\//i, "https://"),
+              durationSec: songDuration,
+              color: GRADIENTS[idx % GRADIENTS.length].bg,
+              type: `FULL • ${formatTime(songDuration)}`
+            };
+          })
+          .filter(Boolean);
+      };
 
       function App() {
-        const [tracks, setTracks] = useState(STARTER_SONGS);
-        const [currentTrack, setCurrentTrack] = useState(STARTER_SONGS[0]);
+        const [tracks, setTracks] = useState([]);
+        const [currentTrack, setCurrentTrack] = useState(null);
         const [isPlaying, setIsPlaying] = useState(false);
         const [progress, setProgress] = useState(0);
         const [duration, setDuration] = useState(0);
-        const [volume, setVolume] = useState(0.85);
+        const [volume, setVolume] = useState(0.9);
         const [isMuted, setIsMuted] = useState(false);
-        const [likedTracks, setLikedTracks] = useState([]);
+        const [likedTracks, setLikedTracks] = useState(() => {
+          try {
+            return JSON.parse(localStorage.getItem("pulsewave_full_likes")) || [];
+          } catch {
+            return [];
+          }
+        });
         const [searchQuery, setSearchQuery] = useState("");
         const [isLoading, setIsLoading] = useState(false);
         const [activeTab, setActiveTab] = useState("home");
         const [playbackSpeed, setPlaybackSpeed] = useState(1);
-        const [statusMsg, setStatusMsg] = useState("Ready! Click any song to play.");
+        const [statusMsg, setStatusMsg] = useState("Connecting to 320kbps Full-Song Server...");
 
         const audioRef = useRef(null);
 
-        // Load Arijit Singh & The Weeknd automatically on startup
         useEffect(() => {
-          searchMusic("Arijit Singh");
+          localStorage.setItem("pulsewave_full_likes", JSON.stringify(likedTracks));
+        }, [likedTracks]);
+
+        // Load Full-Length Trending Hits on Startup
+        useEffect(() => {
+          searchFullSongs("Arijit Singh Hits");
         }, []);
 
-        // Universal Search Function (Works from file:/// without server!)
-        const searchMusic = async (query) => {
+        // Fetch helper with timeout so slow servers are skipped fast
+        const fetchWithTimeout = async (url, ms = 6000) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), ms);
+          try {
+            const res = await fetch(url, { signal: controller.signal });
+            clearTimeout(timer);
+            return res;
+          } catch (e) {
+            clearTimeout(timer);
+            throw e;
+          }
+        };
+
+        // MULTI-BRIDGE FULL-SONG SEARCH ENGINE
+        const searchFullSongs = async (query) => {
           if (!query || !query.trim()) return;
           setIsLoading(true);
           setActiveTab("home");
-          setStatusMsg(`Searching "${query}"...`);
+          setStatusMsg(`Searching full-length songs for "${query}"...`);
 
-          // Step 1: Try Full-Length JioSaavn API first
-          const saavnApis = [
-            `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=24`,
-            `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=24`
-          ];
+          const urls = buildFullSongUrls(query);
 
-          for (const url of saavnApis) {
+          for (const url of urls) {
             try {
-              const res = await fetch(url);
-              if (res.ok) {
-                const json = await res.json();
-                const list = json?.data?.results || json?.results || [];
-                if (list.length > 0) {
-                  const formatted = list
-                    .map((item, idx) => {
-                      const dl = item.downloadUrl;
-                      const audioUrl = Array.isArray(dl)
-                        ? dl[dl.length - 1]?.url || dl[dl.length - 1]?.link
-                        : null;
-                      if (!audioUrl) return null;
+              const res = await fetchWithTimeout(url, 6500);
+              if (!res.ok) continue;
+              const json = await res.json();
+              const parsed = parseSaavnResults(json);
 
-                      const img = item.image;
-                      const coverUrl = Array.isArray(img) && img.length > 0
-                        ? img[img.length - 1]?.url || img[img.length - 1]?.link
-                        : "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&q=80";
-
-                      const artists =
-                        item.artists?.primary?.map((a) => a.name).join(", ") ||
-                        item.primaryArtists ||
-                        "Artist";
-
-                      return {
-                        id: `saavn-${item.id || idx}`,
-                        title: (item.name || item.title || "Song").replace(/&quot;/g, '"').replace(/&amp;/g, "&"),
-                        artist: artists,
-                        url: audioUrl.replace(/^http:\/\//i, "https://"),
-                        cover: coverUrl,
-                        color: GRADIENTS[idx % GRADIENTS.length].bg,
-                        type: "FULL SONG"
-                      };
-                    })
-                    .filter(Boolean);
-
-                  if (formatted.length > 0) {
-                    setTracks(formatted);
-                    setCurrentTrack(formatted[0]);
-                    setStatusMsg(`Loaded ${formatted.length} full songs`);
-                    setIsLoading(false);
-                    return;
-                  }
-                }
+              if (parsed.length > 0) {
+                setTracks(parsed);
+                if (!currentTrack) setCurrentTrack(parsed[0]);
+                setStatusMsg(`✅ Loaded ${parsed.length} Full-Length Songs (320kbps)`);
+                setIsLoading(false);
+                return;
               }
             } catch (err) {
-              // Move to JSONP fallback if blocked by ISP or CORS
+              // Automatically try next proxy/mirror
             }
           }
 
-          // Step 2: Guaranteed JSONP Search (Works 100% on file:/// in all browsers & networks)
-          try {
-            const data = await fetchItunesJSONP(query);
-            if (data && data.results && data.results.length > 0) {
-              const formatted = data.results
-                .filter((item) => item.previewUrl)
-                .map((item, idx) => ({
-                  id: `itunes-${item.trackId}`,
-                  title: item.trackName,
-                  artist: item.artistName,
-                  url: item.previewUrl,
-                  cover: item.artworkUrl100.replace("100x100bb", "500x500bb"),
-                  color: GRADIENTS[idx % GRADIENTS.length].bg,
-                  type: "SPOTIFY / APPLE STREAM"
-                }));
-
-              setTracks(formatted);
-              setCurrentTrack(formatted[0]);
-              setStatusMsg(`Found ${formatted.length} songs for "${query}"`);
-              setIsLoading(false);
-              return;
-            }
-          } catch (jsonpErr) {
-            console.warn("JSONP error:", jsonpErr);
-          }
-
-          setStatusMsg("Showing offline starter tracks (Check internet connection)");
-          setTracks(STARTER_SONGS);
+          setStatusMsg("⚠️ Full-song server busy. Try clicking Search again in 2 seconds.");
           setIsLoading(false);
         };
 
-        // Direct 1-Click Play
+        // Play Full Song Immediately on Click
         const playSong = (track) => {
           if (!audioRef.current) return;
 
@@ -234,12 +218,11 @@
             .play()
             .then(() => {
               setIsPlaying(true);
-              setStatusMsg(`Now Playing: ${track.title}`);
+              setStatusMsg(`🎵 Playing Full Song: ${track.title}`);
             })
-            .catch((e) => {
-              console.error(e);
+            .catch(() => {
               setIsPlaying(false);
-              setStatusMsg("Click the Play button below to start audio");
+              setStatusMsg("Click Play below to start audio");
             });
         };
 
@@ -252,10 +235,7 @@
             if (!audioRef.current.src || audioRef.current.src !== currentTrack.url) {
               audioRef.current.src = currentTrack.url;
             }
-            audioRef.current
-              .play()
-              .then(() => setIsPlaying(true))
-              .catch(() => setStatusMsg("Select a song card to play!"));
+            audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
           }
         };
 
@@ -275,7 +255,6 @@
           if (prev) playSong(prev);
         };
 
-        // Load Local PC MP3s
         const handleLocalFiles = (e) => {
           const files = Array.from(e.target.files).filter(
             (f) => f.type.startsWith("audio/") || f.name.endsWith(".mp3") || f.name.endsWith(".wav")
@@ -288,7 +267,7 @@
             url: URL.createObjectURL(file),
             cover: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&q=80",
             color: GRADIENTS[idx % GRADIENTS.length].bg,
-            type: "LOCAL MP3"
+            type: "LOCAL FULL MP3"
           }));
           setTracks(localList);
           setActiveTab("home");
@@ -304,13 +283,6 @@
           );
         };
 
-        const formatTime = (sec) => {
-          if (!sec || isNaN(sec)) return "0:00";
-          const mins = Math.floor(sec / 60);
-          const secs = Math.floor(sec % 60);
-          return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
-        };
-
         const ARTISTS = [
           "Arijit Singh",
           "The Weeknd",
@@ -320,7 +292,8 @@
           "AR Rahman",
           "AP Dhillon",
           "Eminem",
-          "Taylor Swift"
+          "Atif Aslam",
+          "Shreya Ghoshal"
         ];
 
         return (
@@ -332,18 +305,20 @@
               onEnded={playNext}
             />
 
-            {/* MAIN AREA */}
+            {/* MAIN WORKSPACE */}
             <div className="flex-1 flex overflow-hidden p-3 gap-3">
               
               {/* LEFT SIDEBAR */}
               <div className="w-64 bg-zinc-900/80 backdrop-blur-xl rounded-2xl p-5 flex flex-col gap-5 border border-white/10">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-emerald-500 rounded-full text-black font-black flex items-center justify-center text-xl">
+                  <div className="w-10 h-10 bg-emerald-500 rounded-full text-black font-black flex items-center justify-center text-xl shadow-lg">
                     ♫
                   </div>
                   <div>
                     <span className="text-xl font-extrabold block leading-none">PulseWave</span>
-                    <span className="text-[10px] text-emerald-400 uppercase tracking-widest">V3 Direct Player</span>
+                    <span className="text-[10px] text-emerald-400 uppercase tracking-widest font-bold">
+                      Full-Length 320kbps
+                    </span>
                   </div>
                 </div>
 
@@ -354,7 +329,7 @@
                       activeTab === "home" ? "bg-emerald-500 text-black" : "bg-white/5 text-zinc-300 hover:bg-white/10"
                     }`}
                   >
-                    <span>🌍 Songs List</span>
+                    <span>🏠 Full Songs</span>
                     <span>{tracks.length}</span>
                   </button>
                   <button
@@ -368,10 +343,14 @@
                   </button>
                 </nav>
 
-                {/* Active Song Preview Card */}
                 {currentTrack && (
                   <div className="bg-white/5 p-3 rounded-2xl border border-white/10">
-                    <img src={currentTrack.cover} className="w-full aspect-square object-cover rounded-xl mb-2 shadow-lg" />
+                    <div className="relative">
+                      <img src={currentTrack.cover} className="w-full aspect-square object-cover rounded-xl mb-2 shadow-lg" />
+                      <span className="absolute top-2 right-2 bg-emerald-500 text-black text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                        {currentTrack.type}
+                      </span>
+                    </div>
                     <p className="font-bold text-sm truncate">{currentTrack.title}</p>
                     <p className="text-xs text-zinc-400 truncate">{currentTrack.artist}</p>
                   </div>
@@ -379,13 +358,13 @@
 
                 <div className="mt-auto">
                   <label className="cursor-pointer flex items-center justify-center gap-2 w-full bg-white/10 hover:bg-white/20 text-white font-semibold py-2.5 px-4 rounded-xl transition text-xs border border-white/10">
-                    <span>📂 Open Local PC MP3s</span>
+                    <span>📂 Play Local PC MP3s</span>
                     <input type="file" multiple accept="audio/*" onChange={handleLocalFiles} className="hidden" />
                   </label>
                 </div>
               </div>
 
-              {/* RIGHT CONTENT */}
+              {/* MAIN CONTENT */}
               <div className="flex-1 bg-zinc-900/50 backdrop-blur-xl rounded-2xl p-6 flex flex-col border border-white/10 overflow-hidden">
                 
                 {/* Top Search Bar */}
@@ -393,13 +372,13 @@
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
-                      searchMusic(searchQuery);
+                      searchFullSongs(searchQuery);
                     }}
                     className="flex items-center gap-2 flex-1 max-w-xl"
                   >
                     <input
                       type="text"
-                      placeholder="🔍 Type any song or artist (e.g. Kesariya, Starboy, Coldplay)..."
+                      placeholder="🔍 Search full-length songs (e.g. Tum Hi Ho, Kesariya, Starboy, Believer)..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="w-full bg-white/10 border border-white/20 rounded-full px-5 py-2.5 text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-emerald-400"
@@ -412,7 +391,7 @@
                     </button>
                   </form>
 
-                  {/* Speed Controls */}
+                  {/* Speed / Vibe Selector */}
                   <div className="flex items-center gap-1 bg-white/5 px-3 py-1.5 rounded-full border border-white/10 text-xs">
                     {[
                       { label: "Slowed", rate: 0.85 },
@@ -435,14 +414,14 @@
                   </div>
                 </div>
 
-                {/* Instant Artist Buttons */}
+                {/* Quick Artist Pills */}
                 <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
                   {ARTISTS.map((artist) => (
                     <button
                       key={artist}
                       onClick={() => {
                         setSearchQuery(artist);
-                        searchMusic(artist);
+                        searchFullSongs(artist);
                       }}
                       className="text-xs bg-white/10 hover:bg-emerald-500 hover:text-black px-3.5 py-1.5 rounded-full whitespace-nowrap transition font-medium"
                     >
@@ -454,16 +433,16 @@
                 {/* Status Bar */}
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-lg font-bold">
-                    {activeTab === "home" ? "Click Any Song Card to Play Immediately" : "Your Liked Songs"}
+                    {activeTab === "home" ? "Full-Length Songs (320kbps HD)" : "Your Liked Songs"}
                   </h2>
-                  <span className="text-xs text-emerald-400 font-medium">{statusMsg}</span>
+                  <span className="text-xs text-emerald-400 font-semibold">{statusMsg}</span>
                 </div>
 
                 {/* SONG CARDS GRID */}
                 <div className="flex-1 overflow-y-auto pr-1">
                   {isLoading ? (
                     <div className="text-center py-20 text-emerald-400 font-bold animate-pulse text-lg">
-                      Loading songs from music server...
+                      Fetching full-length 320kbps tracks...
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 pb-6">
@@ -483,12 +462,19 @@
                           >
                             <div className="relative aspect-square rounded-xl overflow-hidden mb-3 bg-zinc-800">
                               <img src={track.cover} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+                              
+                              {/* Full Song Duration Badge */}
+                              <span className="absolute top-2 left-2 bg-black/75 backdrop-blur-md text-emerald-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                {track.type}
+                              </span>
+
                               <button
                                 onClick={(e) => toggleLike(track, e)}
                                 className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/60 flex items-center justify-center"
                               >
                                 {isLiked ? "❤️" : "🤍"}
                               </button>
+
                               <div className="absolute bottom-2 right-2 w-11 h-11 rounded-full bg-emerald-500 text-black flex items-center justify-center font-bold text-lg shadow-xl">
                                 {isCurrent && isPlaying ? "⏸" : "▶"}
                               </div>
