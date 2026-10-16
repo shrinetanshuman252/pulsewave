@@ -151,8 +151,18 @@
 
         // Load Full-Length Trending Hits on Startup
         useEffect(() => {
-          searchFullSongs("Arijit Singh Hits");
-        }, []);
+      fetch('https://pulsewave-server.onrender.com/api/songs')
+        .then((res) => res.json())
+        .then((data) => {
+          setTracks(data);
+          if (data.length > 0) setCurrentTrack(data[0]);
+          setStatusMsg("Connected to cloud server! 🚀");
+        })
+        .catch((err) => {
+          console.error("Server error:", err);
+          setStatusMsg("Could not connect to cloud server");
+        });
+    }, []);
 
         // Fetch helper with timeout so slow servers are skipped fast
         const fetchWithTimeout = async (url, ms = 6000) => {
