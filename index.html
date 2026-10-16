@@ -178,38 +178,53 @@
           }
         };
 
-        // MULTI-BRIDGE FULL-SONG SEARCH ENGINE
-        const searchFullSongs = async (query) => {
-          if (!query || !query.trim()) return;
-          setIsLoading(true);
-          setActiveTab("home");
-          setStatusMsg(`Searching full-length songs for "${query}"...`);
+        // NEW: Global Server Search Engine
+    const searchFullSongs = async (query) => {
+      if (!query || !query.trim()) return;
+      setIsLoading(true);
+      setActiveTab("home");
+      setStatusMsg(`Searching global catalog for "${query}"...`);
 
-          const urls = buildFullSongUrls(query);
+      try {
+        const res = await fetch(`https://pulsewave-server.onrender.com/api/search?q=${encodeURIComponent(query)}`);
+        if (!res.ok) throw new Error("Server search failed");
+        const data = await res.json();
 
-          for (const url of urls) {
-            try {
-              const res = await fetchWithTimeout(url, 6500);
-              if (!res.ok) continue;
-              const json = await res.json();
-              const parsed = parseSaavnResults(json);
-
-              if (parsed.length > 0) {
-                setTracks(parsed);
-                if (!currentTrack) setCurrentTrack(parsed[0]);
-                setStatusMsg(`✅ Loaded ${parsed.length} Full-Length Songs (320kbps)`);
-                setIsLoading(false);
-                return;
-              }
-            } catch (err) {
-              // Automatically try next proxy/mirror
-            }
-          }
-
-          setStatusMsg("⚠️ Full-song server busy. Try clicking Search again in 2 seconds.");
-          setIsLoading(false);
-        };
-
+        if (data && data.length > 0) {
+          setTracks(data);
+          if (!currentTrack) setCurrentTrack(data[0]);
+          setStatusMsg(`✅ Loaded ${data.length} Full-Length Songs from your server!`);
+        } else {
+          setStatusMsg("No tracks found.");
+        }
+      } catch (err) {
+        console.error("Search error:", err);
+        setStatusMsg("❌ Could not connect to server search.");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+// Function to add a custom song to your live server
+    const addCustomSongToServer = async (title, artist, url, cover) => {
+      try {
+        const res = await fetch('https://pulsewave-server.onrender.com/api/songs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, artist, url, cover })
+        });
+        const data = await res.json();
+        if (data.success) {
+          setStatusMsg(`🎵 Added "${title}" to your server!`);
+          // Refresh your song list from the server
+          fetch('https://pulsewave-server.onrender.com/api/songs')
+            .then(r => r.json())
+            .then(songs => setTracks(songs));
+        }
+      } catch (err) {
+        console.error("Failed to add song:", err);
+        setStatusMsg("❌ Could not add song to server.");
+      }
+    };
         // Play Full Song Immediately on Click
         const playSong = (track) => {
           if (!audioRef.current) return;
